@@ -1,0 +1,52 @@
+# Fork-only: keeps ptahdunbar/openclaw main in sync with openclaw/openclaw main.
+# GITHUB_TOKEN cannot update files under .github/workflows, so upstream workflow
+# changes need FORK_SYNC_TOKEN (fine-grained PAT: Contents + Workflows read/write on this fork).
+name: Fork Sync Upstream
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'ptahdunbar/openclaw'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Merge upstream main into fork main
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+          HAS_SYNC_TOKEN: ${{ secrets.FORK_SYNC_TOKEN != '' }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          if [ "$HAS_SYNC_TOKEN" = "true" ]; then
+            echo "Using FORK_SYNC_TOKEN."
+          else
+            echo "::warning::FORK_SYNC_TOKEN is not set; using GITHUB_TOKEN, which cannot sync upstream changes to .github/workflows."
+          fi
+
+          if response=$(gh api -X POST "repos/${REPO}/merge-upstream" -f branch=main 2>&1); then
+            echo "$response"
+            merge_type=$(printf '%s' "$response" | jq -r '.merge_type // "unknown"')
+            echo "Sync result: ${merge_type}" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "$response"
+          if [ "$HAS_SYNC_TOKEN" != "true" ] && printf '%s' "$response" | grep -qiE 'workflow|HTTP 403|HTTP 422'; then
+            echo "::error::Sync failed without FORK_SYNC_TOKEN. Upstream likely changed .github/workflows, which GITHUB_TOKEN cannot write. Create a fine-grained PAT scoped to ${REPO} with Contents and Workflows read/write, then run: gh secret set FORK_SYNC_TOKEN -R ${REPO}"
+          elif printf '%s' "$response" | grep -q 'HTTP 409'; then
+            echo "::error::Sync failed with a merge conflict between fork main and upstream main. Resolve it manually."
+          else
+            echo "::error::merge-upstream failed; see the response above."
+          fi
+          exit 1
