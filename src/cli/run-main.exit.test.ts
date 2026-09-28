@@ -24,6 +24,9 @@ import {
   flushExitAfterOneShotOutputMock,
   requestExitAfterOneShotOutputMock,
   maybeRunCliInContainerMock,
+  loadConfigMock,
+  commanderParseAsyncMock,
+  runGatewayBeforeHook,
 } from "./run-main.test-support.js";
 import process from "node:process";
 import { CommanderError } from "commander";
@@ -75,6 +78,9 @@ describe("runCli exit behavior", () => {
     startProxyMock,
     stopProxyMock,
     tryRouteCliMock,
+    loadConfigMock,
+    commanderParseAsyncMock,
+    runGatewayBeforeHook,
   });
 
   it("returns after a handled container-target invocation", async () => {
