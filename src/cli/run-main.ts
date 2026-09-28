@@ -1176,16 +1176,13 @@ async function runCliWithPreparedOutputMode(
     unregisterProxySignalExitBarrier = registerSignalExitBarrier(stopStartedProxy);
     onExit = () => killStartedProxy();
     process.once("exit", onExit);
+    // Gateway run owns SIGINT/SIGTERM: it drains active work and releases its
+    // lock and owner lease before exiting. A proxy-owned exit would cut that off.
     if (isGatewayRunInvocation) {
-      // Gateway run owns SIGINT/SIGTERM: it drains active work and releases its
-      // lock and owner lease before exiting. A proxy-owned exit would cut that off.
       return;
     }
-    const shutdown = (exitCode: number) => {
-      void waitForSignalExitBarriers().finally(() => {
-        process.exit(exitCode);
-      });
-    };
+    const shutdown = (exitCode: number) =>
+      void waitForSignalExitBarriers().finally(() => process.exit(exitCode));
     onSigterm = () => shutdown(143);
     onSigint = () => shutdown(130);
     process.once("SIGTERM", onSigterm);
