@@ -81,6 +81,23 @@ describe("sandbox docker config", () => {
     },
   );
 
+  it("accepts a declared Gateway source-path namespace and lets agents override it", () => {
+    const res = validateSandbox("docker", { sourcePaths: "gateway" });
+    expect(res.ok).toBe(true);
+    expect(validateSandbox("docker", { sourcePaths: "host" }).ok).toBe(false);
+    expect(
+      resolveSandboxDockerConfig({
+        scope: "agent",
+        globalDocker: { sourcePaths: "gateway" },
+        agentDocker: { sourcePaths: "auto" },
+      }).sourcePaths,
+    ).toBe("auto");
+    expect(
+      resolveSandboxDockerConfig({ scope: "agent", globalDocker: { sourcePaths: "gateway" } })
+        .sourcePaths,
+    ).toBe("gateway");
+  });
+
   it("uses agent override precedence for dangerous sandbox docker booleans", () => {
     for (const key of DANGEROUS_SANDBOX_DOCKER_BOOLEAN_KEYS) {
       const inherited = resolveSandboxDockerConfig({

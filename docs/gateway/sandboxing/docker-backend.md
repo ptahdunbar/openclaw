@@ -70,6 +70,7 @@ Nested Gateway binds are projected too, with their read-only permissions preserv
 
 - Bind-mount the workspace and OpenClaw state directories into the Gateway. Their host and Gateway paths can differ.
 - Use the Docker daemon that runs the Gateway. OpenClaw verifies its container identity before trusting the daemon's mount table.
+- If the Gateway only looks containerized (it sees `/.dockerenv`) but is not a container of the configured daemon, and that daemon resolves paths in the Gateway's own filesystem, set `agents.defaults.sandbox.docker.sourcePaths` to `"gateway"`. Docker Sandboxes (`sbx`) is one such layout: its private engine runs in the same VM as the Gateway. OpenClaw then passes Gateway paths to the daemon unchanged and skips self-inspection. Keep the default `"auto"` for Docker-out-of-Docker through a host socket, where Gateway and daemon-host paths differ.
 - Managed sources and their visible nested mounts must come from bind mounts. Named volumes, tmpfs, and files in the Gateway image are unsupported sources for sibling sandbox mounts.
 - A writable sandbox requires a writable Gateway bind. Use `workspaceAccess: "ro"` for read-only Gateway sources.
 - Explicit `sandbox.docker.binds` and `sandbox.browser.binds` retain their host-path contract. OpenClaw does not translate these operator-supplied sources.
