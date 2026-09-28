@@ -113,6 +113,23 @@ describe("sandbox docker config", () => {
     expect(res.ok).toBe(false);
   });
 
+  it("accepts a declared Gateway source-path namespace and lets agents override it", () => {
+    const res = validateSandbox("docker", { sourcePaths: "gateway" });
+    expect(res.ok).toBe(true);
+    expect(validateSandbox("docker", { sourcePaths: "host" }).ok).toBe(false);
+    expect(
+      resolveSandboxDockerConfig({
+        scope: "agent",
+        globalDocker: { sourcePaths: "gateway" },
+        agentDocker: { sourcePaths: "auto" },
+      }).sourcePaths,
+    ).toBe("auto");
+    expect(
+      resolveSandboxDockerConfig({ scope: "agent", globalDocker: { sourcePaths: "gateway" } })
+        .sourcePaths,
+    ).toBe("gateway");
+  });
+
   it("rejects network host mode via Zod schema validation", () => {
     const res = validateSandbox("docker", {
       network: "host",

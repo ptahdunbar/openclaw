@@ -197,6 +197,10 @@ export const RUNTIME_FIELD_HELP: Record<string, string> = {
     'Optional Docker GPU passthrough value passed to --gpus, for example "all" or "device=GPU-uuid". Requires a compatible host runtime such as NVIDIA Container Toolkit.',
   "agents.entries.*.sandbox.docker.gpus":
     "Per-agent Docker GPU passthrough override for sandbox containers.",
+  "agents.defaults.sandbox.docker.sourcePaths":
+    'How managed sandbox bind sources reach the Docker engine. "auto" (default) verifies the Gateway container through the engine and translates its bind mounts to engine-host paths when the Gateway runs in Docker. "gateway" passes Gateway paths unchanged; use it only when the engine resolves paths in the Gateway\'s own filesystem without running the Gateway as its container, such as Docker Sandboxes (sbx).',
+  "agents.entries.*.sandbox.docker.sourcePaths":
+    "Per-agent override for how managed sandbox bind sources reach the Docker engine.",
   "agents.defaults.sandbox.browser.cdpSourceRange":
     "Optional CIDR allowlist for container-edge CDP ingress (for example 172.21.0.1/32).",
   "agents.entries.*.sandbox.browser.cdpSourceRange":

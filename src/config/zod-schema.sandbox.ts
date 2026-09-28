@@ -56,6 +56,7 @@ export const SandboxDockerSchema = z
     memorySwap: z.union([z.string(), z.number()]).optional(),
     cpus: z.number().positive().optional(),
     gpus: z.string().min(1).optional(),
+    sourcePaths: z.enum(["auto", "gateway"]).optional(),
     ulimits: z
       .record(
         z.string(),

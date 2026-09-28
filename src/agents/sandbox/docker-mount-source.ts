@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type { SandboxDockerSettings } from "../../config/types.sandbox.js";
 import { isPathInside } from "../../infra/path-guards.js";
 import { execContainer, type SandboxContainerEngine } from "./container-engine.js";
 import { isSandboxHostPathAbsolute, normalizeSandboxHostPath } from "./host-paths.js";
@@ -10,6 +11,8 @@ import {
   sandboxMountOptionsReadOnly,
   type ManagedWorkspaceMount,
 } from "./workspace-mounts.js";
+
+export type SandboxDockerSourcePaths = NonNullable<SandboxDockerSettings["sourcePaths"]>;
 
 export type InspectedSandboxMount = {
   type: string;
@@ -114,6 +117,7 @@ async function discoverSourceNamespace(
   const candidates = [...new Set([os.hostname(), ...ids])].slice(0, MAX_SELF_CANDIDATES);
   const signal = AbortSignal.timeout(SELF_INSPECT_TIMEOUT_MS);
   let lastError: unknown;
+  let everyCandidateUnknown = true;
   try {
     const identity = JSON.stringify([
       fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
@@ -159,6 +163,7 @@ async function discoverSourceNamespace(
         return parseInspectedSandboxMounts(container.Mounts, container.Tmpfs);
       } catch (error) {
         lastError = error;
+        everyCandidateUnknown &&= isNoSuchContainerError(error);
         if (signal.aborted) {
           break;
         }
@@ -166,17 +171,34 @@ async function discoverSourceNamespace(
     }
   } catch (error) {
     lastError = error;
+    everyCandidateUnknown = false;
   }
+  // Only when the daemon reports every candidate as absent can the Gateway be
+  // outside that daemon's containers (for example, inside a Docker Sandboxes VM).
+  const sharedNamespaceHint = everyCandidateUnknown
+    ? ` If this Gateway is not a container of that daemon and the daemon resolves paths in the Gateway's own filesystem (for example, inside Docker Sandboxes), set agents.defaults.sandbox.docker.sourcePaths to "gateway" instead.`
+    : "";
   throw new Error(
-    "Cannot resolve sandbox bind sources from this Gateway container. Connect Docker to the daemon that runs the Gateway and make its container inspectable, then restart the Gateway. A hostname alone cannot establish container identity.",
+    `Cannot resolve sandbox bind sources from this Gateway container. Connect Docker to the daemon that runs the Gateway and make its container inspectable, then restart the Gateway. A hostname alone cannot establish container identity.${sharedNamespaceHint}`,
     { cause: lastError },
   );
 }
 
+function isNoSuchContainerError(error: unknown): boolean {
+  return error instanceof Error && /\bno such (?:container|object)\b/iu.test(error.message);
+}
+
 export async function resolveDockerSourceNamespace(
   engine: SandboxContainerEngine,
+  sourcePaths: SandboxDockerSourcePaths = "auto",
 ): Promise<readonly InspectedSandboxMount[] | undefined> {
   if (engine.id !== "docker" || process.platform !== "linux") {
+    return undefined;
+  }
+  // Operator declaration that the engine resolves bind sources in the Gateway's
+  // own filesystem although the Gateway looks containerized. Self-inspection
+  // cannot prove this, so it stays explicit instead of a not-found fallback.
+  if (sourcePaths === "gateway") {
     return undefined;
   }
   const key = JSON.stringify([engine, process.env.DOCKER_HOST, process.env.DOCKER_CONTEXT]);

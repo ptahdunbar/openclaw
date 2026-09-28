@@ -296,6 +296,7 @@ async function ensureSandboxBrowserContainer(
   });
   const mountPlan = await prepareSandboxMountPlan({
     engine: DOCKER_SANDBOX_ENGINE,
+    sourcePaths: params.cfg.docker.sourcePaths,
     workspaceDir: params.workspaceDir,
     ...(params.withWorkspace ? { workspaceSource: "managed-worktree" as const } : {}),
     assertCurrent: params.assertCurrent,

@@ -9,6 +9,7 @@ import {
   parseInspectedSandboxMounts,
   resolveDockerSourceNamespace,
   translateSandboxMountSources,
+  type SandboxDockerSourcePaths,
 } from "./docker-mount-source.js";
 import { getSandboxHostPathPolicyKey } from "./host-paths.js";
 import { isPathInsideContainerRoot } from "./path-utils.js";
@@ -31,6 +32,7 @@ export type SandboxMountPlan = {
 
 export async function prepareSandboxMountPlan(params: {
   engine: SandboxContainerEngine;
+  sourcePaths?: SandboxDockerSourcePaths;
   workspaceDir: string;
   workspaceSource?: "managed-worktree";
   assertCurrent?: () => void;
@@ -43,7 +45,7 @@ export async function prepareSandboxMountPlan(params: {
   readOnlyResourceMounts?: readonly { hostPath: string; containerPath: string }[];
 }): Promise<SandboxMountPlan> {
   const selection = resolveSandboxMountSelection(params);
-  const namespace = await resolveDockerSourceNamespace(params.engine);
+  const namespace = await resolveDockerSourceNamespace(params.engine, params.sourcePaths);
   const relativeSkillMount = `${MATERIALIZED_SANDBOX_SKILLS_WORKSPACE}/skills`;
   const skillTarget = normalizeMountContainerPath(`${params.workdir}/${relativeSkillMount}`);
   if (

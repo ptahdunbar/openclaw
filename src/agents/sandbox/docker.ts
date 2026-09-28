@@ -498,6 +498,7 @@ async function ensureSandboxContainerLifecycle(
   }
   const mountPlan = await prepareSandboxMountPlan({
     engine,
+    sourcePaths: params.cfg.docker.sourcePaths,
     workspaceDir: params.workspaceDir,
     workspaceSource: params.workspaceSource,
     assertCurrent: params.assertCurrent,
