@@ -167,6 +167,31 @@ describe("Docker source namespace", () => {
     },
   );
 
+  it("uses Gateway paths without self-inspection when the operator declares a shared namespace", async () => {
+    // Docker Sandboxes (sbx): /.dockerenv exists, but the engine is a private
+    // daemon in the same VM that never ran the Gateway as a container.
+    vi.mocked(execContainer).mockRejectedValue(new Error("No such container: gateway-hostname"));
+    await expect(
+      resolveDockerSourceNamespace(DOCKER_SANDBOX_ENGINE, "gateway"),
+    ).resolves.toBeUndefined();
+    expect(execContainer).not.toHaveBeenCalled();
+    await expect(resolveDockerSourceNamespace(DOCKER_SANDBOX_ENGINE, "auto")).rejects.toThrow(
+      "Connect Docker to the daemon that runs the Gateway",
+    );
+  });
+
+  it("names the source-path declaration only when the daemon knows no Gateway candidate", async () => {
+    vi.mocked(execContainer).mockRejectedValue(new Error("No such container: gateway-hostname"));
+    await expect(resolveDockerSourceNamespace(DOCKER_SANDBOX_ENGINE)).rejects.toThrow(
+      'set agents.defaults.sandbox.docker.sourcePaths to "gateway"',
+    );
+    vi.mocked(execContainer).mockReset();
+    vi.mocked(execContainer).mockRejectedValue(new Error("permission denied"));
+    const denied = resolveDockerSourceNamespace(DOCKER_SANDBOX_ENGINE);
+    await expect(denied).rejects.toThrow("Connect Docker to the daemon that runs the Gateway");
+    await expect(denied).rejects.not.toThrow("sourcePaths");
+  });
+
   it("leaves native Docker and Podman sources unchanged without self-inspection", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(false);
     vi.mocked(fs.readFileSync).mockReturnValue(

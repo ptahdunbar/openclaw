@@ -124,4 +124,15 @@ describe("sandbox docker config", () => {
     const resolved = resolveSandbox({ scope: "agent", browser: {} }).browser;
     expect(resolved.network).toBe("openclaw-sandbox-browser");
   });
+
+  it("accepts a declared Gateway source-path namespace and lets agents override it", () => {
+    const res = validateSandbox("docker", { sourcePaths: "gateway" });
+    expect(res.ok).toBe(true);
+    expect(validateSandbox("docker", { sourcePaths: "host" }).ok).toBe(false);
+    const gateway = { scope: "agent", docker: { sourcePaths: "gateway" } } as const;
+    expect(resolveSandbox(gateway, { docker: { sourcePaths: "auto" } }).docker.sourcePaths).toBe(
+      "auto",
+    );
+    expect(resolveSandbox(gateway).docker.sourcePaths).toBe("gateway");
+  });
 });

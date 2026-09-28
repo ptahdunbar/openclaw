@@ -107,6 +107,7 @@ function resolveSandboxDockerConfig(
     memorySwap: agentDocker?.memorySwap ?? globalDocker?.memorySwap,
     cpus: agentDocker?.cpus ?? globalDocker?.cpus,
     gpus: normalizeOptionalString(agentDocker?.gpus ?? globalDocker?.gpus),
+    sourcePaths: agentDocker?.sourcePaths ?? globalDocker?.sourcePaths,
     ulimits,
     seccompProfile: agentDocker?.seccompProfile ?? globalDocker?.seccompProfile,
     apparmorProfile: agentDocker?.apparmorProfile ?? globalDocker?.apparmorProfile,
