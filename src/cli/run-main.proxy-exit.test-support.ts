@@ -1,7 +1,9 @@
 import process from "node:process";
 import { expect, it, vi, type Mock } from "vitest";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { registerActiveDebugProxyCapture } from "../proxy-capture/runtime-cleanup.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { getGatewayRunRuntimeHooks } from "./gateway-cli/runtime-hooks.js";
 import { getPendingCliDisposers } from "./runtime-cleanup.js";
 import {
   registerSignalExitBarrier,
@@ -17,17 +19,111 @@ export function makeProxyHandle() {
   };
 }
 
+function emitToAddedListeners(
+  event: "SIGTERM" | "SIGINT" | "exit",
+  before: ReadonlySet<(...args: never[]) => unknown>,
+  ...args: unknown[]
+): void {
+  for (const listener of process.listeners(event)) {
+    if (!before.has(listener)) {
+      (listener as (...listenerArgs: unknown[]) => void)(...args);
+    }
+  }
+}
+
 export function registerRunMainProxyExitTests({
   runCli,
   startProxyMock,
   stopProxyMock,
   tryRouteCliMock,
+  loadConfigMock,
+  commanderParseAsyncMock,
+  runGatewayBeforeHook,
 }: {
   runCli: (argv: string[]) => Promise<void>;
   startProxyMock: Mock<(config: unknown) => Promise<unknown>>;
   stopProxyMock: Mock<(handle: unknown) => Promise<void>>;
   tryRouteCliMock: Mock;
+  loadConfigMock: Mock<(...args: never[]) => OpenClawConfig>;
+  commanderParseAsyncMock: Mock<() => Promise<void>>;
+  runGatewayBeforeHook: () => Promise<void>;
 }): void {
+  it.each([
+    { signal: "SIGTERM" as const, proxyExitCode: 143 },
+    { signal: "SIGINT" as const, proxyExitCode: 130 },
+  ])(
+    "lets the gateway run loop own $signal exit while the managed proxy is active",
+    async ({ signal, proxyExitCode }) => {
+      // The run loop drains active work and releases its lock and owner lease
+      // before it exits. A proxy-owned exit would cut that drain off.
+      const finalHandle = makeProxyHandle();
+      loadConfigMock.mockReturnValueOnce({ proxy: { proxyUrl: "http://127.0.0.1:19876" } });
+      startProxyMock.mockResolvedValueOnce(makeProxyHandle()).mockResolvedValueOnce(finalHandle);
+      const signalListenersBefore = new Set(process.listeners(signal));
+      const exitListenersBefore = new Set(process.listeners("exit"));
+      const exitSpy = vi
+        .spyOn(process, "exit")
+        .mockImplementation((() => undefined as never) as typeof process.exit);
+      const gatewayStop = vi.fn();
+      commanderParseAsyncMock.mockImplementationOnce(async () => {
+        await runGatewayBeforeHook();
+        await getGatewayRunRuntimeHooks().refreshManagedProxy?.({
+          proxyUrl: "http://127.0.0.1:29876",
+        });
+        // Hard exit still releases process-wide proxy routing synchronously.
+        emitToAddedListeners("exit", exitListenersBefore, 0);
+        expect(finalHandle.kill).toHaveBeenCalledWith("SIGTERM");
+        // Stand-in for the run loop, which installs its handler after the refresh.
+        process.once(signal, gatewayStop);
+        // Deliver as process.emit would, but only to listeners this run added,
+        // so the test runner's own handlers stay out of it.
+        emitToAddedListeners(signal, signalListenersBefore, signal);
+        expect(gatewayStop).toHaveBeenCalledOnce();
+        await waitForSignalExitBarriers();
+        expect(exitSpy).not.toHaveBeenCalledWith(proxyExitCode);
+      });
+
+      try {
+        await runCli(["node", "openclaw", "gateway", "run"]);
+      } finally {
+        process.off(signal, gatewayStop);
+        exitSpy.mockRestore();
+      }
+
+      expect(exitSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("removes early proxy signal handlers when the final config disables the proxy", async () => {
+    const earlyHandle = makeProxyHandle();
+    const earlyProxy = { proxyUrl: "http://127.0.0.1:19876" };
+    const finalProxy = undefined;
+    loadConfigMock.mockReturnValueOnce({ proxy: earlyProxy });
+    startProxyMock.mockResolvedValueOnce(earlyHandle).mockResolvedValueOnce(null);
+    const processOnceSpy = vi.spyOn(process, "once");
+    const processOffSpy = vi.spyOn(process, "off");
+    commanderParseAsyncMock.mockImplementationOnce(async () => {
+      const exitHandler = processOnceSpy.mock.calls.find(([event]) => event === "exit")?.[1];
+
+      await getGatewayRunRuntimeHooks().refreshManagedProxy?.(finalProxy);
+
+      expect(exitHandler).toBeTypeOf("function");
+      expect(processOffSpy).toHaveBeenCalledWith("exit", exitHandler);
+    });
+
+    try {
+      await runCli(["node", "openclaw", "gateway", "run"]);
+    } finally {
+      processOffSpy.mockRestore();
+      processOnceSpy.mockRestore();
+    }
+
+    expect(startProxyMock).toHaveBeenNthCalledWith(1, earlyProxy);
+    expect(startProxyMock).toHaveBeenNthCalledWith(2, finalProxy);
+    expect(stopProxyMock).toHaveBeenCalledOnce();
+    expect(stopProxyMock).toHaveBeenCalledWith(earlyHandle);
+  });
+
   it("stops the managed proxy after normal gateway runtime completion", async () => {
     const handle = makeProxyHandle();
     startProxyMock.mockResolvedValueOnce(handle);

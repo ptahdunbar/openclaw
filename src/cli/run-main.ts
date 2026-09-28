@@ -1174,17 +1174,19 @@ async function runCliWithPreparedOutputMode(
       return;
     }
     unregisterProxySignalExitBarrier = registerSignalExitBarrier(stopStartedProxy);
-    const shutdown = (exitCode: number) => {
-      void waitForSignalExitBarriers().finally(() => {
-        process.exit(exitCode);
-      });
-    };
+    onExit = () => killStartedProxy();
+    process.once("exit", onExit);
+    // Gateway run owns SIGINT/SIGTERM: it drains active work and releases its
+    // lock and owner lease before exiting. A proxy-owned exit would cut that off.
+    if (isGatewayRunInvocation) {
+      return;
+    }
+    const shutdown = (exitCode: number) =>
+      void waitForSignalExitBarriers().finally(() => process.exit(exitCode));
     onSigterm = () => shutdown(143);
     onSigint = () => shutdown(130);
-    onExit = () => killStartedProxy();
     process.once("SIGTERM", onSigterm);
     process.once("SIGINT", onSigint);
-    process.once("exit", onExit);
   };
   const replaceStartedProxy = async (config: OpenClawConfig["proxy"]) => {
     await stopStartedProxy();
