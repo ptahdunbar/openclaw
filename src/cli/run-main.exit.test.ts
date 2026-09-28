@@ -2395,6 +2395,45 @@ describe("runCli exit behavior", () => {
     expect(finalStartOrder).toBeGreaterThan(earlyStopOrder);
   });
 
+  it("leaves SIGTERM and SIGINT to the gateway run loop while the managed proxy is active", async () => {
+    // The run loop drains work and releases the Gateway lock and owner lease on
+    // SIGTERM. A proxy-owned exit(143) would cut that drain off mid-way.
+    const earlyHandle = makeProxyHandle();
+    const finalHandle = makeProxyHandle();
+    const earlyProxy = { proxyUrl: "http://127.0.0.1:19876" };
+    const finalProxy = { proxyUrl: "http://127.0.0.1:29876" };
+    loadConfigMock.mockReturnValueOnce({ proxy: earlyProxy });
+    startProxyMock.mockResolvedValueOnce(earlyHandle).mockResolvedValueOnce(finalHandle);
+    const processOnceSpy = vi.spyOn(process, "once");
+    const processOnSpy = vi.spyOn(process, "on");
+    const signalRegistrations = () =>
+      [...processOnceSpy.mock.calls, ...processOnSpy.mock.calls].filter(
+        ([event]) => event === "SIGTERM" || event === "SIGINT",
+      );
+    commanderParseAsyncMock.mockImplementationOnce(async () => {
+      expect(signalRegistrations()).toEqual([]);
+      await runGatewayBeforeHook();
+      await getGatewayRunRuntimeHooks().refreshManagedProxy?.(finalProxy);
+      expect(signalRegistrations()).toEqual([]);
+      const exitHandler = processOnceSpy.mock.calls.findLast(([event]) => event === "exit")?.[1];
+      if (typeof exitHandler !== "function") {
+        throw new Error("managed proxy exit handler was not registered");
+      }
+      // Hard exit still releases process-wide proxy routing synchronously.
+      exitHandler(0 as never);
+      expect(finalHandle.kill).toHaveBeenCalledWith("SIGTERM");
+    });
+
+    try {
+      await runCli(["node", "openclaw", "gateway", "run"]);
+    } finally {
+      processOnSpy.mockRestore();
+      processOnceSpy.mockRestore();
+    }
+
+    expect(stopProxyMock).toHaveBeenCalledWith(earlyHandle);
+  });
+
   it("removes early proxy signal handlers when the final config disables the proxy", async () => {
     const earlyHandle = makeProxyHandle();
     const earlyProxy = { proxyUrl: "http://127.0.0.1:19876" };
@@ -2404,14 +2443,11 @@ describe("runCli exit behavior", () => {
     const processOnceSpy = vi.spyOn(process, "once");
     const processOffSpy = vi.spyOn(process, "off");
     commanderParseAsyncMock.mockImplementationOnce(async () => {
-      const sigtermHandler = processOnceSpy.mock.calls.find(([event]) => event === "SIGTERM")?.[1];
-      const sigintHandler = processOnceSpy.mock.calls.find(([event]) => event === "SIGINT")?.[1];
       const exitHandler = processOnceSpy.mock.calls.find(([event]) => event === "exit")?.[1];
 
       await getGatewayRunRuntimeHooks().refreshManagedProxy?.(finalProxy);
 
-      expect(processOffSpy).toHaveBeenCalledWith("SIGTERM", sigtermHandler);
-      expect(processOffSpy).toHaveBeenCalledWith("SIGINT", sigintHandler);
+      expect(exitHandler).toBeTypeOf("function");
       expect(processOffSpy).toHaveBeenCalledWith("exit", exitHandler);
     });
 
