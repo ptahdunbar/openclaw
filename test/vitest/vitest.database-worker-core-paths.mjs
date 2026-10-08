@@ -30,6 +30,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/wizard/setup.migration-transaction.test.ts",
   "src/wizard/setup.migration-stage.test.ts",
   "src/wizard/setup.inference-verification.test.ts",
+  "src/wizard/setup.finalize.trusted-proxy.test.ts",
   "test/openai-model-discovery-auth-order.test.ts",
   "src/channels/inbound-event/envelope.worker.test.ts",
   "src/model-catalog/remote-refresh.test.ts",
