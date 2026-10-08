@@ -1,4 +1,4 @@
-import { asFiniteNumber, asFiniteNumberInRange } from "@openclaw/normalization-core";
+import { asFiniteNumber, asNonNegativeFiniteNumber } from "@openclaw/normalization-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
@@ -21,6 +21,7 @@ import {
 } from "../../utils/usage-format.js";
 import { normalizePluginsConfig } from "../config-state.js";
 import { compileModelAllowlist, type CompiledModelAllowlist } from "../model-allowlist.js";
+import { normalizePluginPolicyId } from "../plugin-policy-id.js";
 import { getPluginRuntimeGatewayRequestScope } from "./gateway-request-scope.js";
 import {
   createLlmCompleteError as completionError,
@@ -84,18 +85,16 @@ function toRuntimeLogger(logger: typeof defaultLogger): RuntimeLogger {
   };
 }
 
-function normalizeCaller(
-  caller?: LlmCompleteCaller,
-  fallback?: LlmCompleteCaller,
-): LlmCompleteCaller {
-  const source = caller ?? fallback;
-  if (!source) {
+function normalizeCaller(caller?: LlmCompleteCaller): LlmCompleteCaller {
+  if (!caller) {
     return { kind: "unknown" };
   }
+  const id = normalizeOptionalString(caller.id);
+  const name = normalizeOptionalString(caller.name);
   return {
-    kind: source.kind,
-    ...(normalizeOptionalString(source.id) ? { id: source.id!.trim() } : {}),
-    ...(normalizeOptionalString(source.name) ? { name: source.name!.trim() } : {}),
+    kind: caller.kind,
+    ...(id ? { id } : {}),
+    ...(name ? { name } : {}),
   };
 }
 
@@ -192,22 +191,18 @@ function buildMessages(params: {
     );
 }
 
-function readFiniteNonNegativeNumber(value: unknown): number | undefined {
-  return asFiniteNumberInRange(value, { min: 0 });
-}
-
 function readExplicitCostUsd(raw: unknown): number | undefined {
   const cost = asOptionalRecord(raw)?.cost;
   if (typeof cost === "number") {
-    return readFiniteNonNegativeNumber(cost);
+    return asNonNegativeFiniteNumber(cost);
   }
   const record = asOptionalRecord(cost);
   if (!record) {
     return undefined;
   }
   return (
-    readFiniteNonNegativeNumber(record.totalUsd) ??
-    (hasRecordedUsageCost(record) ? readFiniteNonNegativeNumber(record.total) : undefined)
+    asNonNegativeFiniteNumber(record.totalUsd) ??
+    (hasRecordedUsageCost(record) ? asNonNegativeFiniteNumber(record.total) : undefined)
   );
 }
 
@@ -311,32 +306,6 @@ function buildPolicyFromEntry(entry: {
       formatKey: modelKey,
     }),
   };
-}
-
-function resolvePluginPolicyId(
-  authority: RuntimeLlmAuthority | undefined,
-  caller: LlmCompleteCaller,
-): string | undefined {
-  const authorityPluginId = normalizeOptionalString(authority?.pluginIdForPolicy);
-  if (authorityPluginId) {
-    return authorityPluginId;
-  }
-  if (caller.kind !== "plugin") {
-    return undefined;
-  }
-  const pluginId = normalizeOptionalString(caller.id);
-  return pluginId;
-}
-
-function resolvePluginLlmPolicy(
-  cfg: OpenClawConfig,
-  pluginId: string | undefined,
-): RuntimeLlmPolicy | undefined {
-  if (!pluginId) {
-    return undefined;
-  }
-  const entry = normalizePluginsConfig(cfg.plugins).entries[pluginId]?.llm;
-  return entry ? buildPolicyFromEntry(entry) : undefined;
 }
 
 function resolveAuthorityModelPolicy(
@@ -446,9 +415,6 @@ function assertAllowedModelOverride(params: {
   });
 }
 
-/**
- * Create the host-owned generic LLM completion runtime for trusted plugin callers.
- */
 export function createRuntimeLlm(
   options: CreateRuntimeLlmOptions = {},
 ): Pick<PluginRuntimeCore["llm"], "complete"> {
@@ -483,8 +449,13 @@ export function createRuntimeLlm(
         import("../../agents/simple-completion-runtime.js"),
         Promise.resolve(resolveRuntimeConfig(options)),
       ]);
-      const pluginPolicyId = resolvePluginPolicyId(options.authority, caller);
-      const pluginPolicy = resolvePluginLlmPolicy(cfg, pluginPolicyId);
+      const pluginPolicyId =
+        normalizeOptionalString(options.authority?.pluginIdForPolicy) ??
+        (caller.kind === "plugin" ? normalizeOptionalString(caller.id) : undefined);
+      const pluginLlmConfig = pluginPolicyId
+        ? normalizePluginsConfig(cfg.plugins).entries[normalizePluginPolicyId(pluginPolicyId)]?.llm
+        : undefined;
+      const pluginPolicy = pluginLlmConfig ? buildPolicyFromEntry(pluginLlmConfig) : undefined;
       const authorityPolicy = resolveAuthorityModelPolicy(options.authority);
       const preferredProfile = normalizeOptionalString(options.authority?.preferredProfile);
       const audit = {
@@ -585,6 +556,16 @@ export function createRuntimeLlm(
       }
 
       const callerResult = createDeferredCore<LlmCompleteResult>();
+      const reject = (error: unknown, assertAuthorized: () => void) => {
+        try {
+          if (!isLlmOperatorAuthorizationError(error)) {
+            assertAuthorized();
+          }
+          callerResult.reject(error);
+        } catch (authorizationError) {
+          callerResult.reject(authorizationError);
+        }
+      };
       const trackOwner = captureAsyncWorkTracker();
       // Admit drainage with the parent before acquisition; the caller only waits for its result.
       void trackOwner(async () => {
@@ -710,26 +691,12 @@ export function createRuntimeLlm(
             }),
           );
         } catch (error) {
-          try {
-            if (!isLlmOperatorAuthorizationError(error)) {
-              assertPreparedCurrent();
-            }
-            callerResult.reject(error);
-          } catch (authorizationError) {
-            callerResult.reject(authorizationError);
-          }
+          reject(error, assertPreparedCurrent);
         } finally {
           await work.drain();
         }
       }).catch((error: unknown) => {
-        try {
-          if (!isLlmOperatorAuthorizationError(error)) {
-            assertCurrent();
-          }
-          callerResult.reject(error);
-        } catch (authorizationError) {
-          callerResult.reject(authorizationError);
-        }
+        reject(error, assertCurrent);
       });
       return await callerResult.promise;
     }),

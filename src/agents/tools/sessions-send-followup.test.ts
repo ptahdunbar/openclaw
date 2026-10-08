@@ -9,10 +9,8 @@ import type {
   FollowupRequest,
   FollowupCompletionOwner,
 } from "../subagents/completion/session-followup-completion.types.js";
-import {
-  prepareSessionsSendFollowup,
-  startSessionsSendFollowup,
-} from "./sessions-send-followup.js";
+import { prepareSessionsSendFollowup } from "./sessions-send-followup-custody.js";
+import { startSessionsSendFollowup } from "./sessions-send-followup.js";
 import { startSessionsSendReplyFlow } from "./sessions-send-reply-flow.js";
 vi.mock("./sessions-send-reply-flow.js", () => ({ startSessionsSendReplyFlow: vi.fn() }));
 const mocks = vi.hoisted(() => ({
@@ -39,6 +37,10 @@ vi.mock("../../state/user-channel-identity-operations.js", () => ({
 vi.mock("./gateway-caller-context.js", () => ({
   getGatewayToolCallerIdentity: () => ({ agentId: "main", sessionKey: "agent:main:requester" }),
   captureGatewayToolCallerAssertion: () => () => {},
+  resolveGatewayToolOperatorSelection: () => ({
+    operatorAuthority: undefined,
+    assertCurrent: () => {},
+  }),
 }));
 const input = {
   runId: "followup",
@@ -154,9 +156,7 @@ describe("followup retained session authorization", () => {
       targetSessionKey: input.targetSessionKey,
       targetAgentId: "main",
       displayKey: input.targetSessionKey,
-      message: "followup",
-      announceTimeoutMs: 30000,
-      maxPingPongTurns: 0,
+      replyTimeoutMs: 30000,
       replyMode: "one-way" as const,
       requesterSessionKey: input.requesterSessionKey,
       requesterAgentId: input.requesterAgentId,
@@ -217,10 +217,10 @@ describe("followup retained session authorization", () => {
     expect(close).not.toHaveBeenCalled();
   });
 
-  it.each(["canonical", "stored alias"])(
-    "latches original-operator access revocation on the %s key",
-    async (kind) => {
-      const changedKey = kind === "canonical" ? input.targetSessionKey : "legacy-worker-alias";
+  it.each(["access", "archive"] as const)(
+    "latches %s revocation after the row recovers",
+    async (change) => {
+      const changedKey = change === "access" ? "legacy-worker-alias" : input.targetSessionKey;
       const preparedTarget = target().target;
       if (!preparedTarget) {
         throw new Error("Expected target facts");
@@ -228,26 +228,27 @@ describe("followup retained session authorization", () => {
       preparedTarget.storeKeys.push(changedKey);
       const request = await prepare();
       expect(() => request.custody.assertCurrent()).not.toThrow();
-      target().membership = new Set();
+      if (change === "access") {
+        target().membership = new Set();
+      } else {
+        preparedTarget.entry.archivedAt = 2;
+      }
       sessionChanges.emit({ sessionKey: changedKey });
       expect(request.custody.signal.aborted).toBe(true);
-      target().membership = new Set(["requester"]);
+      expect(() => request.custody.assertCurrent()).toThrow(
+        change === "access" ? "revoked" : "archived",
+      );
+      if (change === "access") {
+        target().membership = new Set(["requester"]);
+      } else {
+        delete preparedTarget.entry.archivedAt;
+      }
       sessionChanges.emit({ sessionKey: changedKey });
-      expect(() => request.custody.assertCurrent()).toThrow("revoked");
+      expect(() => request.custody.assertCurrent()).toThrow(
+        change === "access" ? "revoked" : "archived",
+      );
     },
   );
-  it("rejects an archived or replaced target without using the same key as authority", async () => {
-    const request = await prepare();
-    const row = target().target;
-    if (!row) {
-      throw new Error("Missing target");
-    }
-    row.entry.archivedAt = 2;
-    sessionChanges.emit({ sessionKey: input.targetSessionKey });
-    expect(() => request.custody.assertCurrent()).toThrow("archived");
-    delete row.entry.archivedAt;
-    expect(() => request.custody.assertCurrent()).toThrow();
-  });
   it("refuses missing captured authority rather than selecting a System caller", async () => {
     mocks.capture.mockReturnValue(undefined);
     await expect(prepareSessionsSendFollowup(input)).rejects.toThrow("in-process caller custody");
