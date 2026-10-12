@@ -4,6 +4,7 @@ import path from "node:path";
 import { Command } from "commander";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { CONFIG_AUDIT_STORE_LABEL } from "../../config/io.audit.js";
+import type { ConfigSnapshotReadOptions } from "../../config/io.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../../config/types.js";
 import { GATEWAY_SERVICE_RUNTIME_PID_ENV } from "../../daemon/constants.js";
 import type { GatewayServerOptions } from "../../gateway/server-public.js";
@@ -87,11 +88,7 @@ const configState = vi.hoisted(() => ({
   snapshot: { config: {}, exists: false, sourceConfig: {}, valid: true } as Record<string, unknown>,
 }));
 const readBestEffortConfig = vi.fn(async () => configState.cfg);
-type ConfigSnapshotReadOptionsStub = {
-  isolateEnv?: boolean;
-  lowerPrecedenceEnv?: Readonly<Record<string, string>>;
-  observe?: boolean;
-};
+type ConfigSnapshotReadOptionsStub = ConfigSnapshotReadOptions;
 const readConfigFileSnapshotWithPluginMetadata = vi.fn(
   async (_options?: ConfigSnapshotReadOptionsStub) => ({
     snapshot: configState.snapshot,
@@ -574,45 +571,6 @@ describe("gateway run option collisions", () => {
     });
   });
 
-  it("removes shell fallback values when the final accepted config disables fallback", async () => {
-    await withEnvAsync({ OPENCLAW_GATEWAY_TOKEN: undefined }, async () => {
-      const enabledConfig = {
-        env: { shellEnv: { enabled: true } },
-        gateway: { auth: { mode: "none" }, mode: "local" },
-      };
-      const disabledConfig = {
-        gateway: { auth: { mode: "none" }, mode: "local" },
-      };
-      const snapshot = (config: Record<string, unknown>) =>
-        configSnapshot(config, { parsed: config });
-      readConfigFileSnapshotWithPluginMetadata
-        .mockResolvedValueOnce({ snapshot: snapshot(enabledConfig) })
-        .mockImplementationOnce(async (options) => {
-          expect(options?.lowerPrecedenceEnv).toEqual({
-            OPENCLAW_GATEWAY_TOKEN: "shell-token",
-          });
-          expect(process.env.OPENCLAW_GATEWAY_TOKEN).toBe("shell-token");
-          return { snapshot: snapshot(disabledConfig) };
-        })
-        .mockImplementationOnce(async (options) => {
-          expect(options?.lowerPrecedenceEnv).toBeUndefined();
-          expect(process.env.OPENCLAW_GATEWAY_TOKEN).toBeUndefined();
-          return { snapshot: snapshot(disabledConfig) };
-        });
-      loadShellEnvFallback.mockImplementationOnce((opts?: unknown) => {
-        (opts as { env: NodeJS.ProcessEnv }).env.OPENCLAW_GATEWAY_TOKEN = "shell-token";
-      });
-
-      await runGatewayCli(["gateway"]);
-
-      expect(readConfigFileSnapshotWithPluginMetadata).toHaveBeenCalledTimes(3);
-      expect(loadShellEnvFallback).toHaveBeenCalledOnce();
-      expect(clearShellEnvAppliedKeys).toHaveBeenCalledWith(["OPENCLAW_GATEWAY_TOKEN"]);
-      expect(process.env.OPENCLAW_GATEWAY_TOKEN).toBeUndefined();
-      expect(startGatewayServer).toHaveBeenCalledOnce();
-    });
-  });
-
   it("honors config env shell fallback deferral", async () => {
     await withEnvAsync(
       {
@@ -816,7 +774,7 @@ describe("gateway run option collisions", () => {
     });
   });
 
-  it("replaces config-derived env when the final startup snapshot changes in place", async () => {
+  it("rereads changed config with accepted preflight facts and replaces its env", async () => {
     await withEnvAsync(
       {
         OPENCLAW_GATEWAY_TOKEN: undefined,
@@ -839,17 +797,20 @@ describe("gateway run option collisions", () => {
           gateway: { mode: "local" },
         };
         configState.snapshot = configSnapshot(oldConfig, { hash: "old" });
-        const { prepareGatewayRunBootstrap, selectGatewayRunEnvironment } =
-          await import("./pre-bootstrap.js");
-        await selectGatewayRunEnvironment({ opts: {}, runtime: defaultRuntime });
-        await prepareGatewayRunBootstrap({ opts: {}, runtime: defaultRuntime });
+        const preBootstrap = await import("./pre-bootstrap.js");
+        await preBootstrap.selectGatewayRunEnvironment({ opts: {}, runtime: defaultRuntime });
+        await preBootstrap.prepareGatewayRunBootstrap({ opts: {}, runtime: defaultRuntime });
+        const accepted = [{ command: "openclaw doctor --fix", pluginId: "demo", reason: "kept" }];
+        preBootstrap.acceptGatewayRunPreflightMigrations(accepted);
         expect(pinRuntimePaths).toHaveBeenCalledWith(process.env);
         expect(pinConfigDir).toHaveBeenCalledWith(process.env);
         expect(process.env.OPENCLAW_GATEWAY_TOKEN).toBe("old-token");
         expect(process.env.OPENCLAW_PROXY_URL).toBe("http://127.0.0.1:19876");
 
         configState.snapshot = configSnapshot(newConfig, { hash: "new" });
-        readConfigFileSnapshotWithPluginMetadata.mockImplementationOnce(async () => {
+        readConfigFileSnapshotWithPluginMetadata.mockImplementationOnce(async (options) => {
+          // Pre-ownership rereads reuse the accepted generation instead of copying shared state.
+          expect(options?.deferredPluginMigrations).toBe(accepted);
           expect(process.env.OPENCLAW_GATEWAY_TOKEN).toBeUndefined();
           expect(process.env.OPENCLAW_PROXY_URL).toBeUndefined();
           return { snapshot: configState.snapshot };

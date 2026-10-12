@@ -35,6 +35,9 @@ own 60-second cold-start limit, and each `schtasks` command has a 15-second limi
 a stalled operation names the check or command instead of using the update's full
 timeout.
 
+Service-definition refresh recognizes Windows account aliases that resolve to the
+same SID. A different or unresolved account remains protected from automatic repair.
+
 For a global npm installation, the manual recovery path is
 `npm i -g openclaw@<target> --allow-scripts=openclaw`, then
 `openclaw doctor --fix`, then `openclaw gateway restart`. Replace `<target>` with
@@ -43,6 +46,15 @@ if Task Scheduler denies access. OpenClaw prints this alternative; it does not
 run it automatically. Per-user Startup-folder installations do not require
 elevation for this check. An older installed updater keeps its previous behavior
 until replaced; use the elevated or manual path for that first upgrade.
+
+Installations owned by a system package manager skip OpenClaw-managed updates
+before npm staging or Gateway shutdown. If ownership inspection fails, the
+update continues with a warning; only a confirmed ownership match skips replacement. For pacman (including Arch-based
+distributions), update with `sudo pacman -Syu` or your AUR helper. For FreeBSD,
+use the owning pkg or Ports deployment. Then restart the Gateway through its
+service owner.
+Older updaters must receive this fix through that system package manager first;
+a candidate cannot repair an updater that fails before staging it.
 
 Custom npm prefixes such as `~/.npm-global` are recognized from npm's configured
 prefix and the installed OpenClaw launcher. A prefix configured in `~/.npmrc`

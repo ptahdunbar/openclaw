@@ -11,7 +11,11 @@ import {
   registerChatAttachmentPayload,
   releaseChatAttachmentPayloads,
 } from "./attachment-payload-store.ts";
-import { createComposerProps, resetComposerFixture } from "./chat-composer.test-support.ts";
+import {
+  createComposerContainer,
+  createComposerProps,
+  resetComposerFixture,
+} from "./chat-composer.test-support.ts";
 import { applyChatAgentsList } from "./chat-history.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
 import { admitQueuedMessageForSession } from "./chat-outbox-admission.test-support.ts";
@@ -25,7 +29,7 @@ import {
 } from "./chat-send-actions.ts";
 import { handleSendChat } from "./chat-send-submit.ts";
 import { OFFLINE_QUEUE_STORAGE_ERROR } from "./chat-send-support.ts";
-import { renderChatComposer } from "./components/chat-composer.ts";
+import { renderChatComposer } from "./components/chat-composer.tsx";
 import { listStoredChatOutboxes } from "./composer-persistence.ts";
 import { installOutboxBrowserStorage } from "./outbox-browser.test-support.ts";
 import {
@@ -547,7 +551,7 @@ describe("queued message edit round-trip", () => {
         agentsList,
         requestHandlers: { "chat.send": send },
       });
-      const container = document.createElement("div");
+      const container = createComposerContainer();
       try {
         expect(beginQueuedMessageEdit(host, "queued-1")).toBe("started");
         expect(updateQueuedMessageEdit(host, "Unsaved original correction")).toBe(true);

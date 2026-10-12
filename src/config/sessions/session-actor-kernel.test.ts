@@ -122,6 +122,7 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
       expect(state.hot.transcript.idempotency).toEqual([
         { key: "first-user", eventId: "user", rawSeq: 1 },
       ]);
+      expect(state.hot.completionKeys).toEqual([]);
       counter.counts.reads = 0;
       reads.length = 0;
       const working = cloneSessionActorStoredState(state);
@@ -232,13 +233,35 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
     expect(readSessionPendingInputByKey(database, scope, pending.idempotencyKey)?.input_id).toBe(
       "accepted-input",
     );
+    const completed = cloneSessionActorStoredState(state);
+    runOpenClawAgentWriteTransaction(
+      (db) =>
+        withSessionActorTransactionState(db, completed, () => {
+          mutatePendingInput(
+            {
+              ...pending,
+              kind: "complete",
+              outcome: buildAgentRunTerminalOutcome({ status: "ok" }),
+            },
+            {
+              admit() {},
+              writeTransaction: (_label, _owner, run) => run(db),
+            },
+            () => {},
+          );
+        }),
+      options,
+    );
+    const completedPostimage = projectSessionActorHotState(completed);
+    expect(completedPostimage.pendingInputs).toEqual([]);
+    expect(completedPostimage.completionKeys).toEqual([pending.idempotencyKey]);
     const rehydrated = hydrateSessionActorState(
       database,
       target,
       state.hot.version,
       state.hot.writeToken,
     );
-    expect(projectSessionActorHotState(rehydrated)).toEqual(committed);
+    expect(projectSessionActorHotState(rehydrated)).toEqual(completedPostimage);
   });
 });
 
@@ -352,8 +375,19 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
         initialWriterRunId: "first-run",
       },
     };
-    const retainedReads = trackSqliteStatementExecutions(database.db, ["entry"], (query) =>
-      query.toLowerCase().includes('from "session_nodes"') ? "entry" : null,
+    const retainedReads = trackSqliteStatementExecutions(
+      database.db,
+      ["entry", "newer", "parents", "projection"],
+      (query) =>
+        query.toLowerCase().includes('from "session_nodes"')
+          ? "entry"
+          : query.includes('"serialized_bytes"') && query.includes('"identity"."seq" >')
+            ? "newer"
+            : query.includes('"parent"."event_id" as "parent_id"')
+              ? "parents"
+              : query.includes('"reset_active_position"')
+                ? "projection"
+                : null,
     );
     const committed = (() => {
       try {
@@ -369,6 +403,9 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
       }
     })();
     expect(retainedReads.counts.entry).toBe(0);
+    expect(retainedReads.counts.newer).toBe(0);
+    expect(retainedReads.counts.parents).toBe(0);
+    expect(retainedReads.counts.projection).toBe(0);
     expect(committed.kind).toBe("metadata");
     if (committed.kind !== "metadata") {
       throw new Error("Expected prepared metadata append");
@@ -397,6 +434,10 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
         snapshot: {
           version: { rawSeq: 2 },
           events: [{ id: scope.sessionId }, { id: "retained-user" }, { id: "prepared-assistant" }],
+          parents: new Map([
+            ["retained-user", null],
+            ["prepared-assistant", "retained-user"],
+          ]),
         },
       },
     });
@@ -487,5 +528,116 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
         hydrateSessionActorState(database, target, state.hot.version, state.hot.writeToken),
       ),
     ).toEqual(projectSessionActorHotState(state));
+    rejectFresh = false;
+    const advanced = runOpenClawAgentWriteTransaction(
+      (db) =>
+        withSessionActorTransactionState(db, state, () =>
+          applySessionActorAppend(
+            {
+              kind: "metadata",
+              input: {
+                ...append.input,
+                event: {
+                  type: "message",
+                  id: "newer-user",
+                  parentId: "prepared-assistant",
+                  timestamp: "2026-01-01T00:00:04.000Z",
+                },
+                message: {
+                  ...append.input.message!,
+                  messageJson: JSON.stringify({ role: "user", content: "a different turn" }),
+                  validateTurn: false,
+                },
+              },
+            },
+            state,
+            context,
+          ),
+        ),
+      options,
+    );
+    expect(advanced).toMatchObject({
+      kind: "metadata",
+      value: {
+        reload: {
+          ok: true,
+          value: {
+            kind: "bounded",
+            snapshot: {
+              parents: new Map([
+                ["retained-user", null],
+                ["prepared-assistant", "retained-user"],
+                ["newer-user", "prepared-assistant"],
+              ]),
+            },
+          },
+        },
+      },
+    });
+    expect(() =>
+      runOpenClawAgentWriteTransaction(
+        (db) =>
+          withSessionActorTransactionState(db, state, () =>
+            applySessionActorAppend(
+              {
+                kind: "metadata",
+                input: {
+                  ...append.input,
+                  event: {
+                    type: "message",
+                    id: "stale-assistant",
+                    parentId: "prepared-assistant",
+                    timestamp: "2026-01-01T00:00:05.000Z",
+                  },
+                },
+              },
+              state,
+              context,
+            ),
+          ),
+        options,
+      ),
+    ).toThrow("changed");
+    expect(f.events().at(-1)).toMatchObject({ id: "newer-user" });
+    const reset = runOpenClawAgentWriteTransaction(
+      (db) =>
+        withSessionActorTransactionState(db, state, () =>
+          applySessionActorAppend(
+            {
+              kind: "metadata",
+              input: {
+                ...append.input,
+                event: JSON.stringify({
+                  type: "reset",
+                  id: "reset",
+                  parentId: "newer-user",
+                  timestamp: "2026-01-01T00:00:06.000Z",
+                  reason: "new",
+                }),
+                message: undefined,
+                view: { ...append.input.view!, limits: { maxBytes: 10_000, maxEvents: 1 } },
+              },
+            },
+            state,
+            context,
+          ),
+        ),
+      options,
+    );
+    expect(reset).toMatchObject({
+      kind: "metadata",
+      value: {
+        reload: {
+          ok: true,
+          value: {
+            kind: "bounded",
+            snapshot: {
+              events: [{ id: scope.sessionId }, { id: "reset" }],
+              parents: new Map([["reset", "newer-user"]]),
+            },
+          },
+        },
+      },
+    });
   });
 });
