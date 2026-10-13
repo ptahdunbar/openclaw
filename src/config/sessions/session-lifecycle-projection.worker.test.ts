@@ -204,7 +204,7 @@ async function runMaintenanceDrift(
   }
 }
 
-it("moves lifecycle counts and snapshot writes off the host while preserving maintenance", async () => {
+it("keeps guarded lifecycle writes and committed follow-ups off the host while preserving maintenance", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const f = maintenanceFixture();
     replaceSessionEntrySync(
@@ -226,13 +226,28 @@ it("moves lifecycle counts and snapshot writes off the host while preserving mai
       }
     });
     const sql = observeHostDataSql();
+    let commitAllowed = false;
+    let committedFollowup = false;
     try {
       const result = await applySessionEntryLifecycleMutation({
         ...f.scope,
         activeSessionKey: f.scope.sessionKey,
         upserts: f.upserts,
         maintenanceOverride: f.maintenanceOverride,
+        beforeCommitInTransaction: () => {
+          commitAllowed = true;
+        },
+        afterCommitted: async (context) => {
+          context.assertCurrent();
+          expect(commitAllowed).toBe(true);
+          expect(publications.get(f.scope.sessionKey)?.entry).toMatchObject({
+            sessionId: f.initial.sessionId,
+            createdAt: f.initial.createdAt,
+          });
+          committedFollowup = true;
+        },
       });
+      expect(committedFollowup).toBe(true);
       expect(result).toMatchObject({
         beforeCount: 2,
         afterCount: 3,
@@ -275,6 +290,36 @@ it("moves lifecycle counts and snapshot writes off the host while preserving mai
     expect(f.read(f.createdKey)).toMatchObject({ sessionId: "new-session" });
   });
 });
+
+it.each([2, 1])(
+  "keeps maintenance without explicit mutations on the resident writer (cap=%s)",
+  async (maxEntries) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const f = maintenanceFixture();
+      const reclaim = vi.spyOn(reclamation, "runSqliteSessionReclamation");
+      const committed = vi.fn();
+      const result = await applySessionEntryLifecycleMutation({
+        ...f.scope,
+        activeSessionKey: f.scope.sessionKey,
+        maintenanceOverride: { ...f.maintenanceOverride, maxEntries },
+        onLifecycleCommitted: committed,
+      });
+      expect(result).toMatchObject({
+        beforeCount: 2,
+        afterCount: 2,
+        capped: 2 - maxEntries,
+        archived: 2 - maxEntries,
+        removedEntries: 0,
+      });
+      expect(reclaim).not.toHaveBeenCalled();
+      expect(committed).toHaveBeenCalledOnce();
+      expect(f.read()?.sessionId).toBe(f.initial.sessionId);
+      expect(f.read(f.siblingKey)?.archiveReason).toBe(
+        maxEntries === 1 ? "active-session-cap" : undefined,
+      );
+    });
+  },
+);
 
 it("does not classify another operation's conflict as retryable reply initialization", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
