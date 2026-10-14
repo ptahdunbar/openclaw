@@ -22,12 +22,25 @@ never link an installation or resolve workspace packages from another checkout.
 The wrapper still selects and verifies code against the existing trust anchor.
 Installed package versions must exactly match the anchor manifest. On mismatch,
 an explicitly selected, separate, clean `main` checkout is fetched, fast-forwarded,
-and installed with `pnpm install --frozen-lockfile` once before rechecking. A stale
+and installed with `pnpm install --frozen-lockfile` once before rechecking. Fetch and
+fast-forward output streams to stderr, without a diffstat, instead of being captured,
+so a root thousands of commits behind refreshes regardless of output size. A stale
 dirty or non-main root cannot refresh; sparse and unrelated roots are always
 refused. The canonical checkout is never refreshed. Keep the selected installation
 intact until the command finishes. This setting applies at both dependency
 materialization handoffs; in-place wrappers keep their checkout's dependency
 context, and wrapper selection stays unchanged.
+
+Provisioning failures print a redacted error graph to stderr. Preserve that output:
+the wrapper does not create a failure receipt. Lease heartbeat responsiveness
+errors include the verification, renewal, or acknowledgement phase, the failure
+trigger, request counters, elapsed time, and remaining response, operation, and
+lease budgets. These are observations taken before failure changes heartbeat
+status (`0` starting, `1` ready, `2` closed, `3` lost). An odd renewal-progress
+counter means renewal occupied the worker; a completed-request counter can explain
+why a negative response budget alone did not fail earlier. Neither extends the
+lease or operation budget. The diagnostics do not change timeout or recovery
+behavior, and a successful retry does not establish the cause of an earlier failure.
 
 ## Rerun failed CI tests
 
@@ -52,6 +65,8 @@ arguments remain unquoted. Non-Vitest failures show their failed step names and
 “no Vitest rerun; read log” with the job log URL. `--run` executes the selected
 test command with the local runner's default worker behavior. `--json` emits
 `{ run, failures: [{ job, class, files: [{ file, tests }], failedSteps, url, reason }], command }`.
+
+`--run` sets `OPENCLAW_NODE_TEST_PLAN_CONTINUE_ON_FAILURE=1` so ordinary test failures do not hide later selected files; use the same opt-in with manual `pnpm test` commands, while infrastructure failures still stop scheduling.
 
 After PR CI fails, run `pnpm test:ci-failed <pr>`, fix new failures and investigate
 unknown ones, then run `pnpm test:ci-failed <pr> --run` until those pass locally

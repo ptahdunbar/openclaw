@@ -344,7 +344,7 @@ policy, even after role changes. Recovery and branching requested by another
 person use that person's own role rather than the source session's policy.
 
 Required creation provenance is immutable. Role changes, sharing, participation,
-`sessions.patch`, whole-entry replacement, legacy imports, and canonical-key
+`sessions.patch`, whole-entry replacement, legacy imports, and normalized-key
 repair cannot remove or replace an existing required stamp. Blocked persisted
 overwrites emit a `session-sqlite` warning. Inspect them with
 [`openclaw logs --follow`](/cli/logs). Existing unstamped sessions and new sessions
@@ -481,7 +481,7 @@ Identity grants apply only to `operator`-role connections. `node`-role connectio
 
 Each Gateway RPC has a least-privilege method scope that decides whether a
 request reaches its handler. Params-aware methods derive that scope before
-dispatch so authorization failures have one canonical structured response:
+dispatch so authorization failures have one standard structured response:
 
 - `agent` needs `operator.write` for ordinary turns and `operator.admin` for
   `/new` or `/reset` session lifecycle commands.
@@ -497,7 +497,14 @@ dispatch so authorization failures have one canonical structured response:
   require an exact match, or `operator.admin`.
 - `sessions.create` accepts `operator.sessions.write` for ordinary own-session
   creation, including a `projectId`, or the broader `operator.write` scope.
-  Incognito sessions and any `execNode` request require `operator.admin`.
+  Existing device folders (`deviceFolder: { deviceId, path }`) require the broader
+  `operator.write` scope, a connected session host advertising folder support, and
+  node-local consent through `nodeHost.workerRuns.folders`. They do not grant
+  arbitrary node execution, but the selected folder becomes the session's
+  workspace root. If you rely on `tools.fs.workspaceOnly` or exec restrictions to
+  contain `operator.write` sessions, also set `nodeHost.workerRuns.folders` on the
+  device. Incognito sessions and any `execNode` request require
+  `operator.admin`.
   For non-admin callers, the handler limits `cwd` to configured agent
   workspaces. `projectId` cannot be combined with `cwd` or `execNode`.
 - `environments.list` needs `operator.read` for plain inventory and

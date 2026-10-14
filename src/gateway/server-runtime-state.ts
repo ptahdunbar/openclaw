@@ -83,6 +83,7 @@ export async function createGatewayHttpTransport(params: {
   getRuntimeConfig?: () => import("../config/config.js").OpenClawConfig;
   bindHost: string;
   port: number;
+  onListening?: () => void;
   /** Test-instance listener held since allocation; caller closes it if construction fails. */
   testListener?: HttpServer;
   updateCanary?: boolean;
@@ -290,7 +291,7 @@ export async function createGatewayHttpTransport(params: {
   if (!isLoopbackHost(params.bindHost)) {
     params.log.warn(
       "⚠️  Gateway is binding to a non-loopback address. " +
-        "Ensure authentication is configured before exposing to public networks.",
+        "Configure authentication before exposing to public networks.",
     );
   }
   if (params.cfg.gateway?.controlUi?.dangerouslyAllowHostHeaderOriginFallback === true) {
@@ -591,6 +592,7 @@ export async function createGatewayHttpTransport(params: {
       if (httpBindHosts.length === 0) {
         throw new Error("Gateway HTTP server failed to start");
       }
+      params.onListening?.();
       if (!params.updateCanary) {
         await portalService.startIngress();
       }

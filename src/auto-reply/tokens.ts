@@ -117,7 +117,7 @@ function stripLeadingReasoningBlocks(text: string): string {
 
 function stripFinalSilentToken(text: string, token: string): string | null {
   const escaped = escapeRegExp(token);
-  const stripped = text.replace(new RegExp(`(?:^|[\\s*.])${escaped}\\s*$`, "i"), "").trim();
+  const stripped = text.replace(new RegExp(`(?:^|[\\s*.])${escaped}[.!?]*\\s*$`, "i"), "").trim();
   return stripped === text.trim() ? null : stripped;
 }
 
@@ -189,13 +189,18 @@ function isReasoningPrefixedSilentReplyText(text: string | undefined, token: str
   );
 }
 
-/** Returns true for token-only, JSON-envelope, or reasoning-prefixed silent payload text. */
+/** Returns true for token-only, truncated, JSON-envelope, or reasoning-prefixed silent payloads. */
 export function isSilentReplyPayloadText(
   text: string | undefined,
   token: string = SILENT_REPLY_TOKEN,
 ): boolean {
+  const trimmed = text?.trim();
   return (
     isSilentReplyText(text, token) ||
+    // Final fragments need the underscore; a complete answer of "NO" is legitimate text.
+    (token === SILENT_REPLY_TOKEN &&
+      trimmed?.startsWith("NO_") === true &&
+      isSilentReplyPrefixText(trimmed, token)) ||
     isSilentReplyJsonText(text, token) ||
     isReasoningPrefixedSilentReplyText(text, token)
   );
