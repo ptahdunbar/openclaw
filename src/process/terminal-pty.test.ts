@@ -37,8 +37,8 @@ vi.mock("./terminal-pty-bun.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./terminal-pty-bun.js")>()),
   spawnBunTerminalPty: mocks.spawnBunTerminalPty,
 }));
-vi.mock("./terminal-pty-node.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./terminal-pty-node.js")>()),
+// mock-isolation: Avoid importing the Node PTY backend under synthetic Bun and platform globals.
+vi.mock("./terminal-pty-node.js", () => ({
   spawnNodeTerminalPty: mocks.spawnNodeTerminalPty,
 }));
 
@@ -147,35 +147,52 @@ describe("terminal PTY spawn diagnostics", () => {
     "counts an admitted %s PTY once with the agent owner",
     async (backend) => {
       const bunDescriptor = Object.getOwnPropertyDescriptor(process.versions, "bun");
+      const bunGlobalDescriptor = Object.getOwnPropertyDescriptor(globalThis, "Bun");
+      const bunRuntime =
+        (globalThis as typeof globalThis & { Bun?: { Terminal?: unknown } }).Bun ?? {};
+      const terminalDescriptor = Object.getOwnPropertyDescriptor(bunRuntime, "Terminal");
       Object.defineProperty(process.versions, "bun", {
         configurable: true,
         value: backend === "node-pty" ? undefined : "synthetic-bun",
       });
-      vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+      const platform = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
       const pty = fakePty();
       mocks.spawn.mockReturnValueOnce(pty);
       mocks.spawnBunTerminalPty.mockReturnValueOnce(pty);
       mocks.spawnNodeTerminalPty.mockResolvedValueOnce(pty);
-      vi.stubGlobal(
-        "Bun",
-        backend === "bun-native" ? { Terminal: { prototype: { pause() {} } } } : {},
-      );
+      // The real Bun global is immutable; its Terminal capability is writable.
+      Object.defineProperty(bunRuntime, "Terminal", {
+        ...(terminalDescriptor ?? { configurable: true, writable: true }),
+        value: backend === "bun-native" ? { prototype: { pause() {} } } : undefined,
+      });
+      if (!bunGlobalDescriptor) {
+        vi.stubGlobal("Bun", bunRuntime);
+      }
       try {
         await withChildProcessOperation("agent.exec", () =>
           spawnTerminalPty({ file: "/bin/bash", args: ["-c", "synthetic"], cols: 80, rows: 24 }),
         );
-        now = 60_000;
-        emitChildProcessSpawnSample();
-        expect(events).toEqual([
-          expect.objectContaining({ family: "bash", operation: "agent.exec", count: 1 }),
-        ]);
       } finally {
+        platform.mockRestore();
+        if (terminalDescriptor) {
+          Object.defineProperty(bunRuntime, "Terminal", terminalDescriptor);
+        } else {
+          Reflect.deleteProperty(bunRuntime, "Terminal");
+        }
+        if (!bunGlobalDescriptor) {
+          vi.unstubAllGlobals();
+        }
         if (bunDescriptor) {
           Object.defineProperty(process.versions, "bun", bunDescriptor);
         } else {
           Reflect.deleteProperty(process.versions, "bun");
         }
       }
+      now = 60_000;
+      emitChildProcessSpawnSample();
+      expect(events).toEqual([
+        expect.objectContaining({ family: "bash", operation: "agent.exec", count: 1 }),
+      ]);
     },
   );
 
